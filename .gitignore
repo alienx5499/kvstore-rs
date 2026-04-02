@@ -2,6 +2,11 @@
 /debug/
 /target/
 
+# Example persisted files
+*.db
+*.sqlite
+*.sqlite3
+
 ## IDE/editor
 .DS_Store
 .idea/
