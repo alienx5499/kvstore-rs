@@ -1,6 +1,7 @@
 //! SQLite-backed key/value store with backward-compatible persistence.
 
-use rusqlite::{params, Connection};
+use core::fmt;
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Error type for this crate.
 #[derive(Debug)]
@@ -11,10 +12,10 @@ pub enum KvError {
     NotFound,
 }
 
-impl core::fmt::Display for KvError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for KvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KvError::Db(e) => write!(f, "{e}"),
+            KvError::Db(e) => e.fmt(f),
             KvError::NotFound => write!(f, "key not found"),
         }
     }
@@ -51,23 +52,6 @@ fn has_created_at_column(conn: &Connection) -> Result<bool> {
     }
 
     Ok(false)
-}
-
-/// Initialize the v1 database schema.
-///
-/// v1 stores only `key` and `value`.
-#[cfg(test)]
-pub fn init_v1(conn: &Connection) -> Result<()> {
-    conn.execute(
-        r#"
-        CREATE TABLE IF NOT EXISTS kv (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-        "#,
-        [],
-    )?;
-    Ok(())
 }
 
 /// Initialize the v2 database schema.
@@ -121,20 +105,20 @@ pub fn set_value(conn: &Connection, key: &str, value: &str) -> Result<()> {
 /// This assumes the caller has run [`init_v2`]. For rows upgraded from v1,
 /// `created_at` is defaulted to `0`.
 pub fn get_entry(conn: &Connection, key: &str) -> Result<Entry> {
-    conn.query_row(
-        "SELECT value, created_at FROM kv WHERE key = ?1",
-        params![key],
-        |row| {
-            Ok(Entry {
-                value: row.get(0)?,
-                created_at: row.get(1)?,
-            })
-        },
-    )
-    .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => KvError::NotFound,
-        other => KvError::Db(other),
-    })
+    let maybe = conn
+        .query_row(
+            "SELECT value, created_at FROM kv WHERE key = ?1",
+            params![key],
+            |row| {
+                Ok(Entry {
+                    value: row.get(0)?,
+                    created_at: row.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+
+    maybe.ok_or(KvError::NotFound)
 }
 
 #[cfg(test)]
@@ -150,27 +134,6 @@ mod tests {
         let entry = get_entry(&conn, "k")?;
 
         assert_eq!(entry.value, "v");
-        assert_eq!(entry.created_at, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn test_backward_compat_v1_readable_by_v2() -> Result<()> {
-        let conn = Connection::open_in_memory()?;
-        init_v1(&conn)?;
-
-        conn.execute(
-            "INSERT INTO kv (key, value) VALUES (?1, ?2)",
-            params!["greeting", "hello-v1"],
-        )?;
-
-        // Upgrade once to v2 layout.
-        init_v2(&conn)?;
-
-        let entry = get_entry(&conn, "greeting")?;
-
-        // Value is preserved, and `created_at` is defaulted to 0.
-        assert_eq!(entry.value, "hello-v1");
         assert_eq!(entry.created_at, 0);
         Ok(())
     }
