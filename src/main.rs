@@ -1,5 +1,4 @@
-mod store;
-
+use kvstore_rs::store;
 use rusqlite::Connection;
 
 fn main() -> Result<(), store::KvError> {
