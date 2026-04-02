@@ -1,0 +1,81 @@
+name: Signed commits
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify commit signatures
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const bots = new Set(["dependabot[bot]", "github-actions[bot]"]);
+
+            let commits = [];
+            if (context.eventName === "pull_request") {
+              commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner,
+                repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              });
+            } else {
+              const before = context.payload.before;
+              const after = context.payload.after || context.sha;
+              if (!before || /^0+$/.test(before)) {
+                const { data } = await github.rest.repos.getCommit({
+                  owner,
+                  repo,
+                  ref: after,
+                });
+                commits = [data];
+              } else {
+                commits = await github.paginate(
+                  github.rest.repos.compareCommits,
+                  { owner, repo, base: before, head: after, per_page: 100 },
+                  (r) => r.data.commits
+                );
+              }
+            }
+
+            if (commits.length === 0) {
+              core.warning("No commits in range; skipping.");
+              return;
+            }
+
+            const bad = commits.filter((c) => {
+              const login = c.author?.login;
+              if (login && bots.has(login)) return false;
+              return !c.commit?.verification?.verified;
+            });
+
+            for (const c of commits) {
+              const v = c.commit?.verification || {};
+              const login = c.author?.login || "?";
+              const short = c.sha.slice(0, 7);
+              if (bots.has(login)) {
+                core.info(`${short} skip bot ${login}`);
+              } else {
+                core.info(`${short} verified=${v.verified} (${v.reason || "ok"})`);
+              }
+            }
+
+            if (bad.length) {
+              const details = bad.map((c) => {
+                const v = c.commit?.verification || {};
+                return `${c.sha.slice(0, 7)} (${v.reason || "unknown"})`;
+              }).join(", ");
+
+              core.setFailed(`Unsigned/unverified commits: ${details}`);
+            }
